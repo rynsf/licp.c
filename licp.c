@@ -30,11 +30,13 @@ exp stack[STACK_SIZE];
 char heap[HEAP_SIZE];
 int stackptr = 0;
 int heapptr = 0;
-exp err, nil, tru, env;
+exp err, nil, tru, Env;
 exp evalList(exp, exp);
 exp eval(exp, exp);
 void print(exp);
 exp parse();
+int equ(exp, exp);
+exp appendPair(exp, exp, exp);
 
 exp atom(const char *str) {
     int ptr = 0;
@@ -53,13 +55,13 @@ exp atom(const char *str) {
     return at;
 }
 
-exp cons(exp car, exp cdr) {
+exp cons(exp car, exp cdr) { //TODO Better variable names?
     exp c;
     c.type = CONS;
     c.value.cons = stack + stackptr;
     stack[stackptr++] = car;
     stack[stackptr++] = cdr;
-    if (stackptr >= STACK_SIZE) {
+    if (stackptr >= STACK_SIZE) { // stack overflow
         printf("Error: Out of memory\n");
         abort();
     }
@@ -67,7 +69,7 @@ exp cons(exp car, exp cdr) {
 }
 
 exp car(exp ex) {
-    if (ex.type == CONS) {
+    if (ex.type == CONS || ex.type == CLOSURE) {
         return *ex.value.cons;
     }
     //Error handling //TODO
@@ -75,7 +77,7 @@ exp car(exp ex) {
 }
 
 exp cdr(exp ex) {
-    if (ex.type == CONS) {
+    if (ex.type == CONS || ex.type == CLOSURE) {
         return *(ex.value.cons+1);
     }
     //Error handling //TODO
@@ -86,8 +88,36 @@ int not(exp ex) {
     return ex.type == NIL;
 }
 
+exp closure(exp arg, exp ex, exp env) {
+    exp cl, e;
+    cl.type = CLOSURE;
+    e = equ(env, Env) ? nil : env;
+    cl.value.closure = appendPair(arg, ex, e).value.cons;
+    return cl;
+}
+
 exp appendPair(exp key, exp val, exp env) {
     return cons(cons(key, val), env);
+}
+
+exp fun_eval(exp ex, exp env) {
+    return eval(car(evalList(ex, env)), env);
+}
+
+exp fun_quote(exp ex, exp _) {
+    return car(ex);
+}
+
+exp fun_cons(exp ex, exp env) {
+    return cons(car(ex), car(cdr(ex)));
+}
+
+exp fun_car(exp ex, exp env) {
+    return car(car(evalList(ex, env)));
+}
+
+exp fun_cdr(exp ex, exp env) {
+    return cdr(car(evalList(ex, env)));
 }
 
 exp fun_add(exp ex, exp env) {
@@ -138,40 +168,79 @@ exp fun_div(exp ex, exp env) {
     return n;
 }
 
-
-void printCons(exp ex) {
-    putchar('(');
-    while(ex.type == CONS) {
-        print(car(ex));
-        ex = cdr(ex);
-        if(ex.type == NIL) {
-            break;
-        }
-        if (ex.type != CONS) {
-            printf(" . ");
-            print(ex);
-            break;
-        }
-        putchar(' ');
+exp fun_lessThan(exp ex, exp env) { //TODO Error handling raise exception if args not number)
+    ex = evalList(ex, env);
+    if (car(ex).value.number - car(cdr(ex)).value.number < 0) {
+        return tru;
+    } else {
+        return nil;
     }
-    putchar(')');
 }
 
-void print(exp ex) {
-    if (ex.type == NIL) {
-        printf("()");
-    } else if (ex.type == NUMBER) {
-        printf("%.16lg", ex.value.number);
-    } else if (ex.type == ATOM) {
-        printf("%s", ex.value.string);
-    } else if (ex.type == CONS) {
-        printCons(ex);
+exp fun_eq(exp ex, exp env) {
+    ex = evalList(ex, env);
+    if(equ(car(ex), car(cdr(ex)))) {
+        return tru;
+    } else {
+        return nil;
     }
+}
+
+exp fun_not(exp ex, exp env) {
+    if (not(car(evalList(ex, env)))) {
+        return tru;
+    } else {
+        return nil;
+    }
+}
+
+exp fun_or(exp ex, exp env) {
+    exp x = nil;
+    while (ex.type != NIL && not(x = eval(car(ex), env))) {
+        ex = cdr(ex);
+    }
+    return x;
+}
+
+exp fun_and(exp ex, exp env) {
+    exp x = nil;
+    while (ex.type != NIL && !not(x = eval(car(ex), env))) {
+        ex = cdr(ex);
+    }
+    return x;
+}
+
+exp fun_cond(exp ex, exp env) {
+    while (ex.type != NIL && not(eval(car(car(ex)), env))) {
+        ex = cdr(ex);
+    }
+    return eval(car(cdr(car(ex))), env);
+}
+
+exp fun_if(exp ex, exp env) {
+    if (not(eval(car(ex), env))) {
+        return eval(car(cdr(cdr(ex))), env);
+    } else {
+        return eval(car(cdr(ex)), env);
+    }
+}
+
+exp fun_lambda(exp ex, exp env) {
+    return closure(car(ex), car(cdr(ex)), env);
+}
+
+exp fun_define(exp ex, exp env) {
+    Env = appendPair(car(ex), eval(car(cdr(ex)), env), Env); //TODO
+    return car(ex);
 }
 
 int equ(exp x, exp y) {
     if(x.type == ATOM && y.type == ATOM) {
         return x.value.atom == y.value.atom;
+    } else if (x.type == NUMBER && y.type == NUMBER) {
+        return x.value.number == y.value.number;
+    } else if (x.type == CONS && y.type == CONS) {
+        return x.value.cons == y.value.cons;
     }
     return 0;
 }
@@ -187,9 +256,27 @@ exp assoc(exp ex, exp env) {
     }
 }
 
+exp bind(exp arg, exp ex, exp env) {
+    if (arg.type == NIL) {
+        return env;
+    } else if (arg.type == CONS) {
+        exp e = appendPair(car(arg), car(ex), env);
+        return bind(cdr(arg), cdr(ex), e);
+    } else {
+        return appendPair(arg, ex, env);
+    }
+}
+
+exp reduce(exp fun, exp ex, exp env) {
+    exp b = bind(car(car(fun)), evalList(ex, env), not(cdr(fun)) ? Env : cdr(fun));
+    return eval(cdr(car(fun)), b);
+}
+
 exp apply (exp fun, exp ex, exp env) {
     if (fun.type == PRIMITIVE) {
         return fun.value.fun(ex, env);
+    } else if (fun.type == CLOSURE) {
+        return reduce(fun, ex, env);
     } else {
         return err;
     }
@@ -209,9 +296,11 @@ exp eval(exp ex, exp env) {
     if (ex.type == NUMBER) {
         return ex;
     } else if (ex.type == CONS) {
-        return apply(eval(car(ex), env), cdr(ex), env);
+        return apply(eval(car(ex), env), cdr(ex), env); /*call to the primitive function*/ //TODO
     } else if (ex.type == ATOM) {
         return assoc(ex, env);
+    } else {
+        return nil;
     }
 }
 
@@ -244,7 +333,7 @@ char scan() {
     while (seeing(' ')) {
         look();
     }
-    if(seeing('(') || seeing(')')) {
+    if(seeing('(') || seeing(')') || seeing('\'')) {
         buf[i++] = get();
     } else {
         do {
@@ -284,13 +373,55 @@ exp atomic() {
     }
 }
 
+exp quote() {
+    return cons(atom("quote"), cons(Read(), nil));
+}
+
 exp parse() {
-    if( *buf == '(') {
+    if (*buf == '(') {
         return list();
-    } else { // TODO implement quote and comments
+    } if (*buf == '\'') {
+        return quote();
+    }else { // TODO implement quote and comments
         return atomic();
     }
 }
+
+
+void printCons(exp ex) {
+    putchar('(');
+    while(ex.type == CONS) {
+        print(car(ex));
+        ex = cdr(ex);
+        if(ex.type == NIL) {
+            break;
+        }
+        if (ex.type != CONS) {
+            printf(" . ");
+            print(ex);
+            break;
+        }
+        putchar(' ');
+    }
+    putchar(')');
+}
+
+void print(exp ex) {
+    if (ex.type == NIL) {
+        printf("()");
+    } else if (ex.type == NUMBER) {
+        printf("%.16lg", ex.value.number);
+    } else if (ex.type == ATOM) {
+        printf("%s", ex.value.string);
+    } else if (ex.type == CONS) {
+        printCons(ex);
+    } else if (ex.type == CLOSURE) {
+        printf("{lambda at %p}", ex.value.closure);
+    } else if (ex.type == PRIMITIVE) {
+        printf("<complied function at %p>", ex.value.fun);
+    }
+}
+
 
 void initEnv() {
     struct {
@@ -301,27 +432,45 @@ void initEnv() {
         {"-", fun_sub},
         {"*", fun_mul},
         {"/", fun_div},
+        {"quote", fun_quote},
+        {"eval", fun_eval},
+        {"cons", fun_cons},
+        {"car", fun_car},
+        {"cdr", fun_cdr},
+        {"<", fun_lessThan},
+        {"eq?", fun_eq},
+        {"not", fun_not},
+        {"or", fun_or},
+        {"and", fun_and},
+        {"cond", fun_cond},
+        {"if", fun_if},
+        {"lambda", fun_lambda},
+        {"define", fun_define},
         {0}
     };
 
     exp fun = {.type = PRIMITIVE};
     for(int i = 0; prim_fun[i].name; i++) {
         fun.value.fun = prim_fun[i].fun;
-        env = appendPair(atom(prim_fun[i].name), fun, env);
+        Env = appendPair(atom(prim_fun[i].name), fun, Env);
     }
+}
+
+void gc() {
+    stackptr = (Env.value.cons - stack) + 2;
 }
 
 int main() {
     err = atom("ERR");
     nil.type = NIL;
     tru = atom("#t");
-    env = appendPair(tru, tru, nil);
+    Env = appendPair(tru, tru, nil);
     initEnv();
     printf("Welcome to licp.c");
     while(1) {
         printf("\n> ");
-        print(eval(Read(), env));
+        print(eval(Read(), Env));
+        gc();
     }
-
     return 0;
 }
