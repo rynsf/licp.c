@@ -2,8 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define STACK_SIZE 1024
-#define HEAP_SIZE 1024
+#define STACK_SIZE 2024
+#define HEAP_SIZE 2024
 
 typedef struct exp {
     enum {
@@ -13,6 +13,7 @@ typedef struct exp {
         PRIMITIVE,
         CONS,
         CLOSURE,
+        MACRO,
         NIL
     } type;
 
@@ -23,6 +24,7 @@ typedef struct exp {
         struct exp (*fun)(struct exp, struct exp);
         struct exp *cons;
         struct exp *closure;
+        struct exp *macro;
     } value;
 } exp;
 
@@ -55,13 +57,13 @@ exp atom(const char *str) {
     return at;
 }
 
-exp cons(exp car, exp cdr) { //TODO Better variable names?
+exp cons(exp car, exp cdr) { 
     exp c;
     c.type = CONS;
     c.value.cons = stack + stackptr;
     stack[stackptr++] = car;
     stack[stackptr++] = cdr;
-    if (stackptr >= STACK_SIZE) { // stack overflow
+    if (stackptr >= STACK_SIZE) { 
         printf("Error: Out of memory\n");
         abort();
     }
@@ -69,7 +71,7 @@ exp cons(exp car, exp cdr) { //TODO Better variable names?
 }
 
 exp car(exp ex) {
-    if (ex.type == CONS || ex.type == CLOSURE) {
+    if (ex.type == CONS || ex.type == CLOSURE || ex.type == MACRO) {
         return *ex.value.cons;
     }
     //Error handling //TODO
@@ -77,15 +79,25 @@ exp car(exp ex) {
 }
 
 exp cdr(exp ex) {
-    if (ex.type == CONS || ex.type == CLOSURE) {
+    if (ex.type == CONS || ex.type == CLOSURE ||  ex.type == MACRO) {
         return *(ex.value.cons+1);
     }
-    //Error handling //TODO
     return err;
 }
 
 int not(exp ex) {
     return ex.type == NIL;
+}
+
+int let(exp ex) {
+    return ex.type != NIL && !not(cdr(ex));
+}
+
+exp macro(exp v, exp x) {
+    exp ex;
+    ex.type = MACRO;
+    ex.value.macro = cons(v, x).value.cons;
+    return ex;
 }
 
 exp closure(exp arg, exp ex, exp env) {
@@ -168,7 +180,7 @@ exp fun_div(exp ex, exp env) {
     return n;
 }
 
-exp fun_lessThan(exp ex, exp env) { //TODO Error handling raise exception if args not number)
+exp fun_lessThan(exp ex, exp env) { //TODO Error handling raise exception if args not number
     ex = evalList(ex, env);
     if (car(ex).value.number - car(cdr(ex)).value.number < 0) {
         return tru;
@@ -234,6 +246,25 @@ exp fun_define(exp ex, exp env) {
     return car(ex);
 }
 
+exp  fun_leta(exp ex, exp env) {
+    for (; let(ex); ex = cdr(ex)) {
+        env = appendPair(car(car(ex)), eval(car(cdr(car(ex))), env), env);
+    }
+    return eval(car(ex), env);
+}
+
+exp  fun_let(exp ex, exp env) {
+    exp e = env;
+    for (; let(ex); ex = cdr(ex)) {
+        e = appendPair(car(car(ex)), eval(car(cdr(car(ex))), env), e);
+    }
+    return eval(car(ex), e);
+}
+
+exp fun_macro(exp ex, exp env) {
+    return macro(car(ex), car(cdr(ex)));
+}
+
 int equ(exp x, exp y) {
     if(x.type == ATOM && y.type == ATOM) {
         return x.value.atom == y.value.atom;
@@ -272,11 +303,17 @@ exp reduce(exp fun, exp ex, exp env) {
     return eval(cdr(car(fun)), b);
 }
 
+exp expand(exp fun, exp ex, exp env) {
+    return eval(eval(cdr(fun), bind(car(fun), ex, Env)), env);
+}
+
 exp apply (exp fun, exp ex, exp env) {
     if (fun.type == PRIMITIVE) {
         return fun.value.fun(ex, env);
     } else if (fun.type == CLOSURE) {
         return reduce(fun, ex, env);
+    } else if (fun.type == MACRO) {
+        return expand(fun, ex, env);
     } else {
         return err;
     }
@@ -296,7 +333,7 @@ exp eval(exp ex, exp env) {
     if (ex.type == NUMBER) {
         return ex;
     } else if (ex.type == CONS) {
-        return apply(eval(car(ex), env), cdr(ex), env); /*call to the primitive function*/ //TODO
+        return apply(eval(car(ex), env), cdr(ex), env); 
     } else if (ex.type == ATOM) {
         return assoc(ex, env);
     } else {
@@ -382,7 +419,7 @@ exp parse() {
         return list();
     } if (*buf == '\'') {
         return quote();
-    }else { // TODO implement quote and comments
+    }else { // TODO implement comments
         return atomic();
     }
 }
@@ -444,8 +481,11 @@ void initEnv() {
         {"and", fun_and},
         {"cond", fun_cond},
         {"if", fun_if},
+        {"let*", fun_leta},
+        {"let", fun_let},
         {"lambda", fun_lambda},
         {"define", fun_define},
+        {"macro", fun_macro},
         {0}
     };
 
