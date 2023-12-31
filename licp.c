@@ -367,8 +367,12 @@ char get() {
 
 char scan() {
     int i = 0;
-    while (seeing(' ')) {
-        look();
+    while (seeing(' ') || seeing(';')) {
+        if (get() == ';') {
+            while (!seeing('\n')) {
+                look();
+            }
+        }
     }
     if(seeing('(') || seeing(')') || seeing('\'')) {
         buf[i++] = get();
